@@ -31,5 +31,4 @@ bigger ONNX models don't fit in a laptop's RAM.
 
 Notes: inputs travel with neutral names (`case01.png`, `case02.png`, ...);
 keep your own mapping between those names and the originals. The `out` branch
-mirrors them (`raw_case01.png`), so nothing about the source material is
-guessable from the repo itself.
+mirrors them (`raw_case01.png`)
