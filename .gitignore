@@ -1,0 +1,14 @@
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# runs
+data/*/out/
+data/*/in/
+job.json
+
+# editors
+.vscode/
+.idea/
+.DS_Store

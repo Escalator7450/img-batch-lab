@@ -1,0 +1,156 @@
+name: batch
+
+# Generic batch runner for open-source segmentation models (rembg) on free
+# runners. Inputs live at data/<run-id>/payload.zip (a plain zip of images),
+# committed before the run. Trigger via repository_dispatch (event: batch)
+# with a job payload, or manually with workflow_dispatch + a `job` JSON input.
+#
+# job JSON contract:
+#   {"id": "run-001",
+#    "models": ["isnet-anime", "birefnet-general"]}   # optional
+#
+# One job per model (matrix, fail-fast: false) so a runner preemption only
+# kills one leg; results travel as artifacts; a final publish job commits
+# everything to the `out` branch under results/<run-id>/<model>/raw_<stem>.png.
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'JSON payload (see contract above)'
+        required: false
+        default: ''
+  repository_dispatch:
+    types: [batch]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: batch
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.plan.outputs.run_id }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Write job payload
+        env:
+          JOB_JSON: ${{ github.event.client_payload.job && toJSON(github.event.client_payload.job) || github.event.inputs.job }}
+        run: |
+          printf '%s' "$JOB_JSON" > job.json
+          cat job.json
+
+      - id: plan
+        run: |
+          RUN_ID=$(python3 -c "import json;print(json.load(open('job.json'))['id'])")
+          MODELS=$(python3 -c "import json;m=json.load(open('job.json')).get('models');print(json.dumps({'model': m}) if m else '')")
+          if [ -z "$MODELS" ]; then
+            MODELS='{"model":["isnet-anime","birefnet-general-lite","birefnet-general","birefnet-massive"]}'
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "matrix=$MODELS" >> "$GITHUB_OUTPUT"
+
+      - name: Upload job metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-meta
+          path: job.json
+          retention-days: 7
+
+  batch:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install rembg
+        run: |
+          python -m pip install --upgrade pip
+          pip install "rembg[cpu]==2.0.81" pillow numpy
+
+      - name: Unpack inputs
+        run: |
+          ID="${{ needs.plan.outputs.run_id }}"
+          mkdir -p "data/${ID}/in"
+          unzip -o "data/${ID}/payload.zip" -d "data/${ID}/in"
+
+      - name: Runner resources
+        run: echo "cores=$(nproc)" && free -h
+
+      - name: Process (${{ matrix.model }})
+        run: |
+          ID="${{ needs.plan.outputs.run_id }}"
+          python3 scripts/process.py --worker "${{ matrix.model }}" \
+            "data/${ID}/in" "data/${ID}/out/${{ matrix.model }}"
+
+      - name: Upload artifact (backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-${{ needs.plan.outputs.run_id }}-${{ matrix.model }}
+          path: data/${{ needs.plan.outputs.run_id }}/out
+          if-no-files-found: warn
+
+  publish:
+    needs: [plan, batch]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download model artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: batch-${{ needs.plan.outputs.run_id }}-*
+          merge-multiple: true
+          path: assemble
+
+      - name: Download job metadata
+        uses: actions/download-artifact@v4
+        with:
+          pattern: batch-meta
+          path: meta
+
+      - name: Publish to out branch
+        run: |
+          RUN_ID="${{ needs.plan.outputs.run_id }}"
+          STAGE=/tmp/batch_publish
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/results/${RUN_ID}"
+          cp -r assemble/. "$STAGE/results/${RUN_ID}/"
+          JOB_JSON_FILE=$(find meta -name job.json | head -1)
+          cp "$JOB_JSON_FILE" "$STAGE/results/${RUN_ID}/job.json"
+          ls -laR "$STAGE"
+
+          git config user.name "batch-bot"
+          git config user.email "batch-bot@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin out >/dev/null 2>&1; then
+            git fetch --no-tags origin out
+            git switch -C out FETCH_HEAD
+          else
+            git switch --orphan out
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          mkdir -p results
+          cp -r "$STAGE/results/." results/
+          git add -A results
+          git commit -m "batch ${RUN_ID} (${GITHUB_RUN_ID})"
+          git push origin out
