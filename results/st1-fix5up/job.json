@@ -1,0 +1,8 @@
+{
+  "id": "st1-fix5up",
+  "models": [
+    "birefnet-massive",
+    "birefnet-general",
+    "isnet-anime"
+  ]
+}
