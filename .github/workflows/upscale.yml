@@ -1,0 +1,119 @@
+name: upscale
+
+# Real-ESRGAN ×4 batch upscaler (CPU runners). Inputs at
+# data/<run-id>/payload.zip (plain zip of RGB images), committed before the
+# run. Trigger via repository_dispatch (event: upscale) with client_payload
+# {"job": {"id": "run-001", "scale": 4}} or workflow_dispatch + `job` input.
+#
+# Results land on the `out` branch under results/<run-id>/upscaled/up_<stem>.png
+# (PNG, ×4). Pairs with the `batch` workflow: upscale the crops first, then
+# matte the upscaled PNGs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'JSON payload {"id": "...", "scale": 4}'
+        required: false
+        default: ''
+  repository_dispatch:
+    types: [upscale]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: upscale
+  cancel-in-progress: false
+
+jobs:
+  upscale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Write job payload
+        env:
+          JOB_JSON: ${{ github.event.client_payload.job && toJSON(github.event.client_payload.job) || github.event.inputs.job }}
+        run: |
+          printf '%s' "$JOB_JSON" > job.json
+          cat job.json
+
+      - name: Resolve run id
+        id: plan
+        run: |
+          RUN_ID=$(python3 -c "import json;print(json.load(open('job.json'))['id'])")
+          SCALE=$(python3 -c "import json;print(json.load(open('job.json')).get('scale',4))")
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "scale=$SCALE" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install torch (CPU) + Real-ESRGAN
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cpu
+          pip install realesrgan==0.3.2 pillow numpy opencv-python-headless
+          # basicsr 1.4.2 imports a torchvision symbol that moved in 0.15+ — patch it
+          python - <<'PY'
+          import basicsr, pathlib
+          p = pathlib.Path(basicsr.__file__).parent / 'data' / 'data_util.py'
+          if p.exists():
+              t = p.read_text()
+              t2 = t.replace('from torchvision.transforms.functional_tensor import rgb_to_grayscale',
+                             'from torchvision.transforms.functional import rgb_to_grayscale')
+              if t2 != t:
+                  p.write_text(t2)
+                  print('patched basicsr data_util.py')
+          PY
+
+      - name: Unpack inputs
+        run: |
+          ID="${{ steps.plan.outputs.run_id }}"
+          mkdir -p "data/${ID}/in"
+          unzip -o "data/${ID}/payload.zip" -d "data/${ID}/in"
+
+      - name: Runner resources
+        run: echo "cores=$(nproc)" && free -h
+
+      - name: Upscale ×${{ steps.plan.outputs.scale }}
+        run: |
+          ID="${{ steps.plan.outputs.run_id }}"
+          python3 scripts/upscale.py "data/${ID}/in" "data/${ID}/up" --scale ${{ steps.plan.outputs.scale }}
+
+      - name: Upload artifact (backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upscale-${{ steps.plan.outputs.run_id }}
+          path: data/${{ steps.plan.outputs.run_id }}/up
+          if-no-files-found: warn
+
+      - name: Publish to out branch
+        run: |
+          RUN_ID="${{ steps.plan.outputs.run_id }}"
+          STAGE=/tmp/up_publish
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE/results/${RUN_ID}/upscaled"
+          cp data/${RUN_ID}/up/*.png "$STAGE/results/${RUN_ID}/upscaled/" 2>/dev/null || true
+          cp job.json "$STAGE/results/${RUN_ID}/job.json"
+
+          git config user.name "batch-bot"
+          git config user.email "batch-bot@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin out >/dev/null 2>&1; then
+            git fetch --no-tags origin out
+            git switch -C out FETCH_HEAD
+          else
+            git switch --orphan out
+            git rm -rf . >/dev/null 2>&1 || true
+          fi
+          mkdir -p results
+          cp -r "$STAGE/results/." results/
+          git add -A results
+          git commit -m "upscale ${RUN_ID} ×${{ steps.plan.outputs.scale }} (${GITHUB_RUN_ID})"
+          git push origin out
