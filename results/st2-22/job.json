@@ -1,0 +1,9 @@
+{
+  "id": "st2-22",
+  "models": [
+    "isnet-anime",
+    "birefnet-general-lite",
+    "birefnet-general",
+    "birefnet-massive"
+  ]
+}
