@@ -12,8 +12,8 @@ import time
 import urllib.request
 from pathlib import Path
 
-MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth"
-MODEL_FILE = "/tmp/realesr-animevideov3.pth"
+MODEL_URL = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth"
+MODEL_FILE = "/tmp/RealESRGAN_x4plus_anime_6B.pth"
 
 
 def main() -> None:
@@ -29,11 +29,11 @@ def main() -> None:
         print(f"weights downloaded in {time.time()-t0:.1f}s", flush=True)
 
     import numpy as np
+    from basicsr.archs.rrdbnet_arch import RRDBNet
     from realesrgan import RealESRGANer
-    from realesrgan.archs.srvgg_arch import SRVGGNetCompact
 
-    model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64,
-                            num_conv=32, upscale=4, act_type="prelu")
+    model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6,
+                    num_grow_ch=32, scale=4)
     upsampler = RealESRGANer(scale=4, model_path=MODEL_FILE, model=model,
                              tile=0, tile_pad=10, pre_pad=0, half=False,
                              device="cpu")
