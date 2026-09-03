@@ -1,0 +1,9 @@
+{
+  "id": "st2-art20",
+  "models": [
+    "isnet-anime",
+    "birefnet-general-lite",
+    "birefnet-general",
+    "birefnet-massive"
+  ]
+}
