@@ -1,0 +1,7 @@
+{
+  "id": "st2-art20up",
+  "models": [
+    "birefnet-massive",
+    "birefnet-general"
+  ]
+}
