@@ -1,0 +1,7 @@
+{
+  "id": "96e-kabuterimon",
+  "models": [
+    "isnet-anime",
+    "birefnet-general"
+  ]
+}
